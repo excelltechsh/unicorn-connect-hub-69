@@ -31,7 +31,7 @@ serve(async (req) => {
       throw new Error('User not authenticated');
     }
 
-    const { url } = await req.json();
+    const { url, selectedUrls, isSelective } = await req.json();
     
     if (!url) {
       throw new Error('URL is required');
@@ -43,7 +43,9 @@ serve(async (req) => {
       .insert({
         user_id: user.user.id,
         url: url,
-        status: 'crawling'
+        status: 'crawling',
+        is_selective: isSelective || false,
+        selected_urls: selectedUrls || null
       })
       .select()
       .single();
@@ -56,7 +58,7 @@ serve(async (req) => {
     console.log('Created scan:', scan.id);
 
     // Start background crawling process
-    EdgeRuntime.waitUntil(crawlWebsite(scan.id, url, authHeader));
+    EdgeRuntime.waitUntil(crawlWebsite(scan.id, url, authHeader, selectedUrls, isSelective));
 
     return new Response(JSON.stringify({ 
       success: true, 
@@ -78,7 +80,7 @@ serve(async (req) => {
   }
 });
 
-async function crawlWebsite(scanId: string, url: string, authHeader: string) {
+async function crawlWebsite(scanId: string, url: string, authHeader: string, selectedUrls?: string[], isSelective?: boolean) {
   const supabase = createClient(supabaseUrl, supabaseKey, {
     global: { headers: { Authorization: authHeader } }
   });
@@ -86,7 +88,48 @@ async function crawlWebsite(scanId: string, url: string, authHeader: string) {
   try {
     console.log(`Starting Firecrawl for scan ${scanId}, URL: ${url}`);
 
-    // Call Firecrawl API
+    // Determine crawl strategy based on whether this is selective or full crawl
+    if (isSelective && selectedUrls && selectedUrls.length > 0) {
+      // Selective crawl: scrape only selected URLs
+      console.log(`Starting selective crawl for ${selectedUrls.length} URLs`);
+      
+      for (const pageUrl of selectedUrls) {
+        try {
+          const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${firecrawlApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              url: pageUrl,
+              formats: ['markdown', 'html', 'links'],
+              onlyMainContent: true
+            })
+          });
+
+          if (scrapeResponse.ok) {
+            const scrapeData = await scrapeResponse.json();
+            if (scrapeData.success && scrapeData.data) {
+              await processPage(scrapeData.data, scanId, supabase, url);
+            }
+          }
+        } catch (error) {
+          console.error(`Error scraping ${pageUrl}:`, error);
+        }
+      }
+
+      // Update scan status to completed
+      await supabase
+        .from('scans')
+        .update({ status: 'completed' })
+        .eq('id', scanId);
+
+      console.log(`Selective crawl completed for scan ${scanId}`);
+      return;
+    }
+
+    // Full site crawl using original logic
     const crawlResponse = await fetch('https://api.firecrawl.dev/v1/crawl', {
       method: 'POST',
       headers: {
@@ -126,44 +169,7 @@ async function crawlWebsite(scanId: string, url: string, authHeader: string) {
     console.log(`Processing ${pages.length} pages`);
 
     for (const page of pages) {
-      const { error: pageError } = await supabase
-        .from('pages')
-        .insert({
-          scan_id: scanId,
-          url: page.metadata?.url || page.url,
-          title: page.metadata?.title,
-          content: page.markdown || page.content,
-          status_code: page.metadata?.statusCode || 200
-        });
-
-      if (pageError) {
-        console.error('Error inserting page:', pageError);
-      }
-
-      // Extract and store links if available
-      if (page.metadata?.links) {
-        const { data: insertedPage } = await supabase
-          .from('pages')
-          .select('id')
-          .eq('scan_id', scanId)
-          .eq('url', page.metadata.url || page.url)
-          .single();
-
-        if (insertedPage) {
-          for (const link of page.metadata.links) {
-            const isInternal = link.href?.includes(new URL(url).hostname);
-            
-            await supabase
-              .from('page_links')
-              .insert({
-                page_id: insertedPage.id,
-                target_url: link.href,
-                is_internal: isInternal,
-                anchor_text: link.text
-              });
-          }
-        }
-      }
+      await processPage(page, scanId, supabase, url);
     }
 
     // Update scan status
@@ -219,46 +225,9 @@ async function pollCrawlJob(jobId: string, scanId: string, authHeader: string) {
         console.log(`Crawl completed! Processing ${pages.length} pages`);
 
         for (const page of pages) {
-          const { error: pageError } = await supabase
-            .from('pages')
-            .insert({
-              scan_id: scanId,
-              url: page.metadata?.url || page.url,
-              title: page.metadata?.title,
-              content: page.markdown || page.content,
-              status_code: page.metadata?.statusCode || 200
-            });
-
-          if (pageError) {
-            console.error('Error inserting page:', pageError);
-          }
-
-          // Extract and store links if available
-          if (page.metadata?.links) {
-            const { data: insertedPage } = await supabase
-              .from('pages')
-              .select('id')
-              .eq('scan_id', scanId)
-              .eq('url', page.metadata.url || page.url)
-              .single();
-
-            if (insertedPage) {
-              for (const link of page.metadata.links) {
-                const { data: scanData } = await supabase.from('scans').select('url').eq('id', scanId).single();
-                const hostname = scanData ? new URL(scanData.url).hostname : '';
-                const isInternal = link.href?.includes(hostname);
-                
-                await supabase
-                  .from('page_links')
-                  .insert({
-                    page_id: insertedPage.id,
-                    target_url: link.href,
-                    is_internal: isInternal,
-                    anchor_text: link.text
-                  });
-              }
-            }
-          }
+          const { data: scanData } = await supabase.from('scans').select('url').eq('id', scanId).single();
+          const baseUrl = scanData ? scanData.url : url;
+          await processPage(page, scanId, supabase, baseUrl);
         }
 
         // Update scan status to completed
@@ -303,4 +272,47 @@ async function pollCrawlJob(jobId: string, scanId: string, authHeader: string) {
     .eq('id', scanId);
   
   throw new Error('Crawl job timed out after 5 minutes');
+}
+
+async function processPage(page: any, scanId: string, supabase: any, baseUrl: string) {
+  const { error: pageError } = await supabase
+    .from('pages')
+    .insert({
+      scan_id: scanId,
+      url: page.metadata?.url || page.url,
+      title: page.metadata?.title,
+      content: page.markdown || page.content,
+      status_code: page.metadata?.statusCode || 200
+    });
+
+  if (pageError) {
+    console.error('Error inserting page:', pageError);
+    return;
+  }
+
+  // Extract and store links if available
+  if (page.metadata?.links) {
+    const { data: insertedPage } = await supabase
+      .from('pages')
+      .select('id')
+      .eq('scan_id', scanId)
+      .eq('url', page.metadata?.url || page.url)
+      .single();
+
+    if (insertedPage) {
+      for (const link of page.metadata.links) {
+        const hostname = new URL(baseUrl).hostname;
+        const isInternal = link.href?.includes(hostname);
+        
+        await supabase
+          .from('page_links')
+          .insert({
+            page_id: insertedPage.id,
+            target_url: link.href,
+            is_internal: isInternal,
+            anchor_text: link.text
+          });
+      }
+    }
+  }
 }

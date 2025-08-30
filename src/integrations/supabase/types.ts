@@ -194,6 +194,8 @@ export type Database = {
           created_at: string
           error: string | null
           id: string
+          is_selective: boolean | null
+          selected_urls: Json | null
           status: string
           updated_at: string
           url: string
@@ -203,6 +205,8 @@ export type Database = {
           created_at?: string
           error?: string | null
           id?: string
+          is_selective?: boolean | null
+          selected_urls?: Json | null
           status?: string
           updated_at?: string
           url: string
@@ -212,6 +216,8 @@ export type Database = {
           created_at?: string
           error?: string | null
           id?: string
+          is_selective?: boolean | null
+          selected_urls?: Json | null
           status?: string
           updated_at?: string
           url?: string
