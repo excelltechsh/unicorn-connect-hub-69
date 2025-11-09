@@ -169,7 +169,7 @@ async function conductMarketResearch(scanId: string, authHeader: string) {
     `;
 
     try {
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${googleApiKey}`;
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${googleApiKey}`;
       console.log(`Calling Gemini API at: ${geminiUrl.replace(googleApiKey, 'REDACTED')}`);
       
       const geminiResponse = await fetch(geminiUrl, {
@@ -241,7 +241,7 @@ async function conductMarketResearch(scanId: string, authHeader: string) {
           .from('market_insights')
           .insert({
             scan_id: scanId,
-            model: 'gemini-1.5-flash',
+            model: 'gemini-2.0-flash-exp',
             insights: insights,
             sources: allSources
           });

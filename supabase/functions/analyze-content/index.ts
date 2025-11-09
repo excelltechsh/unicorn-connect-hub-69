@@ -102,7 +102,7 @@ async function analyzePages(scanId: string, authHeader: string) {
       `;
 
       try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${googleApiKey}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${googleApiKey}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -156,7 +156,7 @@ async function analyzePages(scanId: string, authHeader: string) {
             .from('page_suggestions')
             .insert({
               page_id: page.id,
-              model: 'gemini-1.5-flash',
+              model: 'gemini-2.0-flash-exp',
               suggestions: suggestions
             });
 
